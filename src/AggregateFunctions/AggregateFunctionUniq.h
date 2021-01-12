@@ -15,6 +15,7 @@
 
 #include <Common/HashTable/Hash.h>
 #include <Common/HashTable/HashSet.h>
+#include <Common/HyperLogLogBiasEstimator.h>
 #include <Common/HyperLogLogWithSmallSetOptimization.h>
 #include <Common/CombinedCardinalityEstimator.h>
 #include <Common/typeid_cast.h>
@@ -85,6 +86,93 @@ struct AggregateFunctionUniqHLL12DataForVariadic
     static String getName() { return "uniqHLL12"; }
 };
 
+/// uniqHLL64
+
+template<typename T, UInt8 P>
+class HyperLogLogWrapper
+{
+    using InnerType = HyperLogLogCounter<P, TrivialHash, UInt64, double, TrivialBiasEstimator>;
+
+private:
+    UInt8 bucketBitsLength = P;
+    UInt8 buckets = 1ULL << P;
+    InnerType hll;
+
+public:
+    UInt8 getPrecision()
+    {
+        return this -> bucketBitsLength;
+    }
+
+    void merge(const HyperLogLogWrapper<T, P> & rhs) {
+        hll.merge(rhs.hll);
+    }
+
+    /// ALWAYS_INLINE is required to have better code layout for uniqHLL12 function
+    void ALWAYS_INLINE insert(const IColumn & column, size_t row_num)
+    {
+        /// TODO: Current only support string value
+        if (std::is_same_v<T, String>) {
+            StringRef value = column.getDataAt(row_num);
+	        DB::ReadBufferFromMemory buffer(value.data, value.size);
+	    insert(buffer);
+        }
+    }
+
+    /// Test purpose.
+    void insert(ReadBuffer & buffer)
+    {
+        if (std::is_same_v<T, String>) {
+            UInt8 format = HyperLogLogCounterHelper::format(buffer);
+
+            if (format != 2)
+                throw Exception("The incoming hll data format is not valid with format: " + std::to_string(format), ErrorCodes::BAD_ARGUMENTS);
+
+            UInt8 parsedBitsLength = HyperLogLogCounterHelper::precision(buffer);
+            int parsedBuckets = 1 << parsedBitsLength;
+
+            if (parsedBitsLength != bucketBitsLength)
+                throw Exception("The incoming data is encoded with " + std::to_string(parsedBitsLength) + " bits, but the defined HyperLogLog should " +
+                                "work well with " + std::to_string(bucketBitsLength) + " bits.", ErrorCodes::BAD_ARGUMENTS);
+
+            InnerType newHll;
+            char tmp;
+            for (int i = 0; i < parsedBuckets; i++)
+            {
+                readChar(tmp, buffer);
+                newHll.updateBucket(i, static_cast<UInt8>(tmp));
+            }
+            hll.merge(newHll);
+        }
+    }
+
+    void write(DB::WriteBuffer & out) const
+    {
+        hll.write(out);
+    }
+
+    void read(DB::ReadBuffer & in)
+    {
+        hll.read(in);
+    }
+
+    UInt64 size() const
+    {
+        return hll.size();
+    }
+};
+
+template<typename T, UInt8 P>
+struct AggregateFunctionUniqHLL64Data
+{
+//    using Set = HyperLogLogWithSmallSetOptimization<T, 16, 12>;
+//    Set set;
+
+    using Set = HyperLogLogWrapper<String, P>;
+    Set set;
+
+    static String getName() { return "uniqHLL64"; }
+};
 
 /// uniqExact
 
@@ -188,6 +276,16 @@ struct OneAdder
 
                 data.set.insert(key);
             }
+        }
+	/// TODO: Simply it.
+        else if constexpr (std::is_same_v<Data, AggregateFunctionUniqHLL64Data<T, 12>> ||
+            std::is_same_v<Data, AggregateFunctionUniqHLL64Data<T, 13>>	||
+            std::is_same_v<Data, AggregateFunctionUniqHLL64Data<T, 14>> ||
+            std::is_same_v<Data, AggregateFunctionUniqHLL64Data<T, 15>> ||
+            std::is_same_v<Data, AggregateFunctionUniqHLL64Data<T, 16>> ||
+            std::is_same_v<Data, AggregateFunctionUniqHLL64Data<T, 17>>)
+        {
+            data.set.insert(column, row_num);
         }
     }
 };

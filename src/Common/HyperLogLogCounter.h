@@ -6,6 +6,7 @@
 #include <Common/HashTable/Hash.h>
 
 #include <IO/ReadBuffer.h>
+#include <IO/ReadBufferFromString.h>
 #include <IO/WriteBuffer.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
@@ -394,6 +395,15 @@ public:
         rank_store.writeText(out);
     }
 
+    /// the public entry for a outer calculation of the rank
+    void ALWAYS_INLINE updateBucket(HashValueType bucket, UInt8 rank)
+    {
+        // if satisfied the invalid conditions, skip updating
+        if (unlikely(rank) > max_rank || bucket >= bucket_count)
+            return;
+        update(bucket, rank);
+    }
+
 private:
     /// Extract subset of bits in [begin, end[ range.
     inline HashValueType extractBitSequence(HashValueType val, UInt8 begin, UInt8 end) const
@@ -461,7 +471,7 @@ private:
             throw Poco::Exception("Internal error", DB::ErrorCodes::LOGICAL_ERROR);
     }
 
-    inline double applyCorrection(double raw_estimate) const
+inline double applyCorrection(double raw_estimate) const
     {
         double fixed_estimate;
 
@@ -571,3 +581,39 @@ using HLL12 = HyperLogLogCounter<
     HyperLogLogMode::FullFeatured,
     DenominatorMode::Compact
 >;
+
+/// parsing a string as HyperLogLogCounter
+struct HyperLogLogCounterHelper
+{
+    static UInt8 format(DB::ReadBuffer & buffer)
+    {
+        char format;
+        readChar(format, buffer);
+        return static_cast<UInt8>(format);
+    }
+
+    static UInt8 precision(DB::ReadBuffer & buffer)
+    {
+	char precision;
+        readChar(precision, buffer);
+        return static_cast<UInt8>(precision);
+    }
+
+    /// TODO: Refine this code
+    template <
+	UInt8 P,
+        typename Hash = IntHash32<UInt64>,
+        typename HashValueType = UInt32,
+        typename DenominatorType = double,
+        typename BiasEstimator = TrivialBiasEstimator>
+    static HyperLogLogCounter<P, Hash, HashValueType, DenominatorType, BiasEstimator> newInstance(DB::ReadBuffer & buffer)
+    {
+        UInt8 format;
+        readIntText(format, buffer);
+        UInt8 precision;
+        readIntText(precision, buffer);
+        HyperLogLogCounter<P, Hash, HashValueType, DenominatorType, BiasEstimator> hll;
+        hll.readText(buffer);
+        return hll;
+    }
+};

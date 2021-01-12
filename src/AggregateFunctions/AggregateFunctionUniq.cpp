@@ -3,6 +3,8 @@
 #include <AggregateFunctions/Helpers.h>
 #include <AggregateFunctions/FactoryHelpers.h>
 
+#include <Common/FieldVisitors.h>
+
 #include <DataTypes/DataTypeDate.h>
 #include <DataTypes/DataTypeDateTime.h>
 #include <DataTypes/DataTypeString.h>
@@ -72,6 +74,59 @@ AggregateFunctionPtr createAggregateFunctionUniq(const std::string & name, const
         return std::make_shared<AggregateFunctionUniqVariadic<DataForVariadic, false, false>>(argument_types);
 }
 
+template <template <typename, UInt8> class Data>
+AggregateFunctionPtr createAggregateFunctionUniq(const std::string & name, const DataTypes & argument_types, const Array & params)
+{
+    UInt8 precision = 17;
+    if (!params.empty())
+    {
+        if (params.size() != 1)
+            throw Exception(
+                "Aggregate function " + name + " requires one parameter or less.", ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
+
+        UInt64 precision_param = applyVisitor(FieldVisitorConvertToNumber<UInt64>(), params[0]);
+        // This range is hardcoded below
+        if (precision_param > 20 || precision_param < 12)
+            throw Exception(
+                "Parameter for aggregate function " + name + " is out or range: [12, 20].", ErrorCodes::ARGUMENT_OUT_OF_BOUND);
+        precision = precision_param;
+    }
+
+    if (argument_types.empty())
+        throw Exception("Incorrect number of arguments for aggregate function " + name,
+                        ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
+
+    if (argument_types.size() == 1)
+    {
+        const IDataType & argument_type = *argument_types[0];
+
+        WhichDataType which(argument_type);
+        if (which.isStringOrFixedString())
+        {
+            switch (precision)
+            {
+                case 12:
+                    return std::make_shared<AggregateFunctionUniq<String, Data<String, 12>>>(argument_types);
+                case 13:
+                    return std::make_shared<AggregateFunctionUniq<String, Data<String, 13>>>(argument_types);
+                case 14:
+                    return std::make_shared<AggregateFunctionUniq<String, Data<String, 14>>>(argument_types);
+                case 15:
+                    return std::make_shared<AggregateFunctionUniq<String, Data<String, 15>>>(argument_types);
+                case 16:
+                    return std::make_shared<AggregateFunctionUniq<String, Data<String, 16>>>(argument_types);
+                case 17:
+                    return std::make_shared<AggregateFunctionUniq<String, Data<String, 16>>>(argument_types);
+            }
+        }
+    }
+
+    /// "Variadic" method also works as a fallback generic case for single argument.
+    /// TODO: Support Variadic method ?
+//    return std::make_shared<AggregateFunctionUniqVariadic<DataForVariadic, false, false>>(argument_types);
+    throw Exception("Unsupported number of arguments for aggregate function " + name, ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH);
+}
+
 template <bool is_exact, template <typename> class Data, typename DataForVariadic>
 AggregateFunctionPtr createAggregateFunctionUniq(const std::string & name, const DataTypes & argument_types, const Array & params)
 {
@@ -132,6 +187,10 @@ void registerAggregateFunctionsUniq(AggregateFunctionFactory & factory)
 
     factory.registerFunction("uniqExact",
         {createAggregateFunctionUniq<true, AggregateFunctionUniqExactData, AggregateFunctionUniqExactData<String>>, properties});
+
+    factory.registerFunction("uniqHLL64",
+        {createAggregateFunctionUniq<AggregateFunctionUniqHLL64Data>, properties});
+
 }
 
 }
